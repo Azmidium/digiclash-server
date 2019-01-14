@@ -21,22 +21,27 @@ Events In:
 */
 class GameServer {
     constructor(game) {
+        this.server = () => server_1.io
+            .of("/api/game")
+            .to(this.getJoinCode())
+            .on("connection", (socket) => this.registerEvents(socket));
         // Game Loop
         this.startGameInteration = () => {
             this.log("Starting game interation...");
-            this.updateState(game_state_enums_1.default.TRANSITION);
             this.startTransition();
         };
         this.startTransition = () => {
             this.log("Starting transition...");
+            this.updateState(game_state_enums_1.default.TRANSITION);
             this.resetUsers();
             setTimeout(() => this.startQuestion(), this.getSet().transition_time * 1000);
         };
         this.startQuestion = () => {
             this.incrementQuestion();
             this.question_start_time = Date.now();
-            this.log(`Show question #${this.getInfo().current_question + 1}...`);
-            this.startCountdown(this.getCurrentQuestion().answer_time, this.startShowAnswer(), this.checkAllUsersAnswered());
+            this.updateState(game_state_enums_1.default.QUESTION);
+            this.log(`Show question "${this.getCurrentQuestion().text}" to ${this.getNumPlayers() || 0} players`);
+            this.startCountdown(this.getCurrentQuestion().answer_time, this.startShowAnswer, this.checkAllUsersAnswered);
         };
         this.startShowAnswer = () => {
             this.log(`Showing answers to question #${this.getInfo().current_question + 1}`);
@@ -46,17 +51,20 @@ class GameServer {
         this.startLeaderboard = () => {
             this.log(`Showing leaderboard`);
             this.updateState(game_state_enums_1.default.LEADERBOARD);
-            this.startCountdown(this.getSet().leaderboard_time, () => {
-                if (!!this.getNextQuestion())
-                    return server_1.io.to(this.getJoinCode()).emit("end");
-                this.startTransition();
-            });
+            this.startCountdown(this.getSet().leaderboard_time, this.attemptFinish);
         };
-        this.incrementQuestion = () => {
-            this.getInfo().current_question += 1;
-            this.updateGame();
+        this.attemptFinish = () => {
+            if (!!!this.getNextQuestion())
+                return this.updateState(game_state_enums_1.default.FINISH);
+            this.startTransition();
         };
         // Events
+        this.registerEvents = (socket) => {
+            socket.on("start", () => this.startGameInteration());
+            socket.on("answer", (user_id, option) => this.handleAnswer(user_id, option));
+            socket.on("leave", (user_id) => this.removeUser(user_id));
+            socket.to("host").on("end", () => this.handleEnd());
+        };
         this.handleAnswer = (user_id, option) => {
             let user = this.getUserByID(user_id);
             let score = this.calculateScore(option.correct);
@@ -71,14 +79,34 @@ class GameServer {
             user.point_history.push(record);
             this.updateUser(user);
         };
+        this.handleEnd = () => {
+            logger_controllers_1.LogManager.info(`Ending game ${this.getJoinCode()}...`);
+            server_1.io.of("/api/game")
+                .in(this.getJoinCode())
+                .clients((err, socketIds) => {
+                if (err)
+                    return logger_controllers_1.LogManager.error(err);
+                socketIds.forEach(id => server_1.io.of("/api/game").sockets[id].disconnect(true));
+            });
+        };
         // Update emitters
-        this.updateGame = () => server_1.io.to(this.getJoinCode()).emit("game", this.getInfo());
+        this.updateGame = () => server_1.io
+            .of("/api/game")
+            .to(this.getJoinCode())
+            .to("host")
+            .emit("game", this.getGame());
+        this.updateInfo = () => server_1.io
+            .of("/api/game")
+            .to(this.getJoinCode())
+            .emit("info", this.getInfo());
         this.updateUser = (user) => server_1.io
+            .of("/api/game")
             .to(this.getJoinCode())
             .to(user.id.toString())
             .emit("user", user);
         this.updateState = (state) => {
             this.getInfo().game_state = state;
+            this.updateInfo();
             this.updateGame();
         };
         this.addPlayerToGame = (user) => {
@@ -116,7 +144,18 @@ class GameServer {
                 point_history: []
             };
             this.addPlayerToGame(user);
+            this.updateGame();
             return user;
+        };
+        this.removeUser = (user_id) => {
+            let i = this.getPlayers().findIndex(user => user.id === user_id);
+            if (i !== -1)
+                this.getPlayers().splice(i, 1);
+        };
+        this.incrementQuestion = () => {
+            this.getInfo().current_question += 1;
+            this.updateInfo();
+            this.updateGame();
         };
         this.getNewUserID = () => this.getNumPlayers() + 1;
         this.calculateScore = (correct) => {
@@ -130,23 +169,27 @@ class GameServer {
         };
         this.startCountdown = (seconds, callback, stop) => {
             this.emitCountdown(seconds);
-            let countdown = setInterval(x => {
-                if (!!stop && stop) {
-                    callback();
-                    return clearInterval(countdown);
-                }
-                let iteration = x + 1;
-                this.emitCountdown(seconds - iteration);
-                if (seconds >= iteration) {
-                    callback();
-                    return clearInterval(countdown);
-                }
+            let count = seconds;
+            let countdown = setInterval(() => {
+                count -= 1;
+                if (!!stop && stop())
+                    return this.exitCountdown(callback, countdown);
+                this.emitCountdown(count);
+                if (count <= 0)
+                    return this.exitCountdown(callback, countdown);
             }, 1000);
             return countdown;
         };
+        this.exitCountdown = (callback, countdown) => {
+            callback();
+            clearInterval(countdown);
+        };
         this.emitCountdown = (number) => {
-            this.log(number.toString());
-            server_1.io.to(this.getJoinCode()).emit("countdown", number);
+            if (number % 5 === 0)
+                this.log(number.toString());
+            server_1.io.of("/api/game")
+                .to(this.getJoinCode())
+                .emit("countdown", number);
         };
         this.log = (message) => logger_controllers_1.LogManager.info(this.getJoinCode() + " " + message);
         this.resetUsers = () => {
@@ -156,11 +199,7 @@ class GameServer {
             }
         };
         this.game = game;
-        server_1.io.to(this.getJoinCode()).on("connection", (socket) => {
-            socket.on("start", () => this.startGameInteration());
-            socket.on("answer", (user_id, option) => this.handleAnswer(user_id, option));
-            socket.on("disconnect", socket => { });
-        });
+        this.server();
     }
 }
 exports.GameServer = GameServer;

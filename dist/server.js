@@ -48,4 +48,26 @@ app.use("/api", api_routes_1.default);
 app.use("/auth", auth_routes_1.default);
 // Angular Routing
 app.use("*", (req, res, next) => res.sendFile(path_1.default.join(__dirname, "client/index.html")));
+// Log Connection Data
+/*
+io.on("connection", socket => {
+  let ip = socket.request.connection.remoteAddress;
+  let ua = socket.request.headers["user-agent"];
+
+  LogManager.info(
+    `A user connected from ${ip} using a ${
+      isMobile(ua) ? "mobile device" : "desktop PC"
+    }`
+  );
+
+  socket.on("disconnect", () => LogManager.info("A user disconnected"));
+});
+*/
+// Designate room to new player
+io.of("/api/game").on("connection", socket => {
+    socket.on("join-host", room => socket.join(room).join("host"));
+    socket.on("join-game", room => socket.join(room));
+    socket.on("join-user", (room_data) => socket.join(room_data.code).join(room_data.user_id));
+    socket.on("disconnect", () => socket.leaveAll());
+});
 //# sourceMappingURL=server.js.map

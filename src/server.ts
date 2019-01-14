@@ -20,6 +20,7 @@ import socketIo from "socket.io";
 // Route Imports
 import apiRouter from "./routes/api.routes";
 import authRouter from "./routes/auth.routes";
+import { stringify } from "querystring";
 
 // Express Init
 const port = process.env.PORT || 3000;
@@ -73,7 +74,7 @@ app.use("*", (req, res, next) =>
 );
 
 // Log Connection Data
-/* 
+/*
 io.on("connection", socket => {
   let ip = socket.request.connection.remoteAddress;
   let ua = socket.request.headers["user-agent"];
@@ -84,10 +85,19 @@ io.on("connection", socket => {
     }`
   );
 
-  socket.on("disconnect", () => {
-    LogManager.info("A user disconnected");
-  });
+  socket.on("disconnect", () => LogManager.info("A user disconnected"));
 });
 */
+
+// Designate room to new player
+io.of("/api/game").on("connection", socket => {
+  socket.on("join-host", room => socket.join(room).join("host"));
+  socket.on("join-game", room => socket.join(room));
+  socket.on("join-user", (room_data: { code: string; user_id: string }) =>
+    socket.join(room_data.code).join(room_data.user_id)
+  );
+
+  socket.on("disconnect", () => socket.leaveAll());
+});
 
 export { io };
